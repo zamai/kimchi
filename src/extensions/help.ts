@@ -19,7 +19,7 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "/model", desc: "Switch to a specific model" },
 	{ kind: "entry", key: "/scoped-models", desc: "Enable or disable models for Ctrl+P cycling" },
 	{ kind: "entry", key: "/multi-model", desc: "Configure model roles" },
-	{ kind: "entry", key: "/ferment", desc: "Run task in background" },
+	{ kind: "entry", key: "/ferment", desc: "Start a Ferment workflow" },
 	{ kind: "entry", key: "/todos", desc: "Open todo overlay / manage short-lived todo items" },
 	{ kind: "entry", key: "/compact", desc: "Compact context window" },
 	{ kind: "entry", key: "/name", desc: "Rename this session" },

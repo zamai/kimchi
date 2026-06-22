@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { VALID_MEMORY_CATEGORIES } from "../../../ferment/state-machine.js"
 import type { MemoryCategory } from "../../../ferment/types.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
-import { createApplyAndPersist, failedToolResult, toolErr, toolOk } from "../tool-helpers.js"
+import { createApplyAndPersist, failedToolResult, requireActiveFerment, toolErr, toolOk } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import { DecisionParams, MemoryParams } from "../tool-schemas.js"
 
@@ -22,6 +22,8 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 		description: "Record a decision.",
 		parameters: DecisionParams,
 		async execute(_, params) {
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.ADD_DECISION })
+			if (!active.ok) return active.result
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "add_decision",
 				title: params.title,
@@ -41,6 +43,8 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 		description: "Record a memory.",
 		parameters: MemoryParams,
 		async execute(_, params) {
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.ADD_MEMORY })
+			if (!active.ok) return active.result
 			// Pre-validate to keep the existing user-friendly error wording.
 			if (!VALID_MEMORY_CATEGORIES.includes(params.category as MemoryCategory)) {
 				return toolErr(`Invalid category "${params.category}". Use one of: ${VALID_MEMORY_CATEGORIES.join(", ")}.`)

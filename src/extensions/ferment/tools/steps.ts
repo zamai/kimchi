@@ -21,6 +21,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
+	requireActiveFerment,
 	resolvePhase,
 	resolveStep,
 	toolErr,
@@ -181,8 +182,9 @@ export async function startStep(
 	services: StepHandlerServices = defaultStepHandlerServices,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const f = runtime.getStorage().get(params.ferment_id)
-	if (!f) return toolErr("Ferment not found.")
+	const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.START_STEP })
+	if (!active.ok) return active.result
+	const f = active.ferment
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 	const step = resolveStep(phase, params.step_id)
@@ -339,8 +341,9 @@ export async function completeStep(
 	const applyAndPersist = createApplyAndPersist(runtime)
 	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
 
-	const f = runtime.getStorage().get(params.ferment_id)
-	if (!f) return toolErr("Ferment not found.")
+	const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.COMPLETE_STEP })
+	if (!active.ok) return active.result
+	const f = active.ferment
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 	const step = resolveStep(phase, params.step_id)
@@ -599,8 +602,9 @@ ${renderGateGuidance("complete_ferment_step")}`,
 		description: "Run verification command and record result.",
 		parameters: VerifyParams,
 		async execute(_, params, signal, onUpdate, ctx) {
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.VERIFY_STEP })
+			if (!active.ok) return active.result
+			const f = active.ferment
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
@@ -668,8 +672,9 @@ ${renderGateGuidance("complete_ferment_step")}`,
 		description: "Skip a step.",
 		parameters: StepActionParams,
 		async execute(_, params) {
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.SKIP_STEP })
+			if (!active.ok) return active.result
+			const f = active.ferment
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)
@@ -697,8 +702,9 @@ ${renderGateGuidance("complete_ferment_step")}`,
 		description: "Mark a step as failed with an error message.",
 		parameters: FailStepParams,
 		async execute(_, params) {
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.FAIL_STEP })
+			if (!active.ok) return active.result
+			const f = active.ferment
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 			const step = resolveStep(phase, params.step_id)

@@ -17,7 +17,7 @@ import {
 	normalizeSuccessCriteriaInput,
 	renderSuccessCriteria,
 } from "../../../ferment/success-criteria.js"
-import { normalizeFermentTitle } from "../../../ferment/title.js"
+import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
@@ -35,11 +35,13 @@ import {
 	toScopingQuestionType,
 } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
+import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
+import { autoInitFromEnv, ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
-import { resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
@@ -49,6 +51,7 @@ import type { PendingScope } from "../scoping.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
+	requireActiveFerment,
 	toolErr,
 	toolErrWithNextAction,
 	toolOk,
@@ -61,9 +64,12 @@ import {
 	ConfirmCompletionCriteriaParams,
 	ListParams,
 	ProposeScopingParams,
+	RequestFermentWorkflowParams,
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
+import { setActiveFermentAndApplyProfile } from "../tool-scope.js"
+import type { FermentUi } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -82,6 +88,7 @@ type NormalizeProposeScopingResult =
 	| { ok: false; error: ReturnType<typeof toolErr> }
 type CompleteFermentArgs = Static<typeof CompleteFermentParams>
 type ConfirmCompletionCriteriaArgs = Static<typeof ConfirmCompletionCriteriaParams>
+type RequestFermentWorkflowArgs = Static<typeof RequestFermentWorkflowParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 type ScopingAnswer = {
 	questionId: string
@@ -483,8 +490,12 @@ async function confirmCompletionCriteria(
 	params: ConfirmCompletionCriteriaArgs,
 	ctx: unknown,
 ): Promise<ToolResult> {
-	const ferment = runtime.getStorage().get(params.ferment_id)
-	if (!ferment) return toolErr("Ferment not found.")
+	const active = requireActiveFerment(runtime, params.ferment_id, {
+		toolName: FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
+		statuses: ["draft"],
+	})
+	if (!active.ok) return active.result
+	const ferment = active.ferment
 
 	const criteria = params.criteria.map((criterion) => criterion.trim()).filter(Boolean)
 	if (criteria.length === 0) return toolErr('Field "criteria" must include at least one non-empty criterion.')
@@ -566,6 +577,9 @@ export async function scopeFerment(
 	const successCriteria = normalizeSuccessCriteriaInput(params.success_criteria)
 	if (!successCriteria.ok) return toolErr(successCriteria.error)
 
+	const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.SCOPE })
+	if (!active.ok) return active.result
+
 	// Plan-scope gate validation runs BEFORE any state mutation. The agent
 	// must declare verifiable success signals (P1), composition (P2), and
 	// the ferment-completion checklist (P3) before scoping is accepted.
@@ -579,7 +593,7 @@ export async function scopeFerment(
 
 	// Hard gate: only enforced for ferments scoped through the interactive TUI
 	// path. Headless and one-shot scoping never mark this gate as interactive.
-	const fGate = runtime.getStorage().get(params.ferment_id)
+	const fGate = active.ferment
 	const gateActive = runtime.isScopingInteractive(params.ferment_id)
 	if (gateActive && !runtime.isScopingConfirmed(params.ferment_id)) {
 		const pending = runtime.getPendingScope(params.ferment_id)
@@ -652,7 +666,7 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 		runtime.clearFermentState(params.ferment_id)
 		resetReactiveContinuationNudgeCount(params.ferment_id)
 		runtime.setActive(undefined)
-		return toolOk(
+		return toolErr(
 			`Ferment "${fSnapshot.name}" is already complete. No further lifecycle action is available. Do not act on this ferment again without clear user consent.`,
 		)
 	}
@@ -662,6 +676,8 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 		runtime.setActive(undefined)
 		return toolErr(`Ferment "${fSnapshot.name}" is abandoned and cannot be completed.`)
 	}
+	const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.COMPLETE })
+	if (!active.ok) return active.result
 
 	// Ferment-scope gate validation runs BEFORE any state mutation. The agent
 	// must answer C1 (success criteria satisfied), C2 (no unresolved F3
@@ -752,13 +768,56 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	)
 }
 
+async function requestFermentWorkflow(
+	pi: ExtensionAPI,
+	runtime: FermentRuntime,
+	params: RequestFermentWorkflowArgs,
+	ctx: unknown,
+): Promise<ToolResult> {
+	const intent = params.intent.trim()
+	if (!intent) return toolErr('Field "intent" must be a non-empty explicit Ferment request.')
+
+	const active = runtime.getActive()
+	if (active && active.status !== "complete" && active.status !== "abandoned") {
+		return toolErr(`Ferment "${active.name}" is already active with status "${active.status}".`)
+	}
+
+	await ensureGitRepo({
+		autoInit: autoInitFromEnv(),
+		ui: (ctx as { ui?: FermentUi } | undefined)?.ui,
+	})
+
+	const titleSource = params.title?.trim() ? params.title : intent
+	const ferment = runtime.getStorage().create(deriveDraftFermentTitle(titleSource), intent)
+	setActiveFermentAndApplyProfile(pi, runtime, ferment)
+	runtime.markScopingInteractive(ferment.id)
+	runtime.setPendingScope(ferment.id, { goal: "", successCriteria: [], constraints: [] })
+	if (pi.events) emitFermentCreated(pi.events, ferment)
+	appendRefEntry(pi, ferment.id)
+
+	return toolOk(
+		`Ferment "${ferment.name}" created.\nferment_id: "${ferment.id}"\n\nNext action: call \`propose_ferment_scoping\` with this ferment_id and the full scoping payload, or ask the user focused scoping questions first if required.`,
+	)
+}
+
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
 	pi.registerTool({
+		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
+		label: "Request Ferment Workflow",
+		description:
+			"Start a new Ferment workflow only when the user explicitly asks to use Ferment or start a Ferment workflow. Do not call this merely because a task is complex, broad, multi-step, or long-running.",
+		parameters: RequestFermentWorkflowParams,
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return requestFermentWorkflow(pi, runtime, params, ctx)
+		},
+	})
+
+	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft for an active draft Ferment: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If no draft Ferment is active and the user explicitly asked to use Ferment, call request_ferment_workflow first; otherwise continue normally without Ferment. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -768,10 +827,15 @@ ${renderGateGuidance("scope_ferment")}`,
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 		async execute(_, rawParams, _signal, _onUpdate, ctx) {
-			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
 			const params = normalized.params
+			const active = requireActiveFerment(runtime, params.ferment_id, {
+				toolName: FERMENT_TOOLS.PROPOSE_SCOPING,
+				statuses: ["draft"],
+			})
+			if (!active.ok) return active.result
+			clearScopingStatus(ctx)
 
 			// 1. Validate P-gates (same as scopeFerment).
 			const gateError = validateGatesOrErr(params.gates, {
@@ -788,19 +852,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			if (questionValidationError) return toolErr(questionValidationError)
 
 			// 3. Replace pending buffer wholesale.
-			const ferment = runtime.getStorage().get(params.ferment_id)
-			if (!ferment) return toolErr(`Ferment "${params.ferment_id}" not found.`)
-			if (ferment.status !== "draft") {
-				const nextAction =
-					ferment.status === "planned" ? "call activate_ferment_phase" : "continue the current ferment action"
-				return toolOk(
-					withNextActionHint(
-						`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
-						ferment,
-					),
-				)
-			}
-
+			const ferment = active.ferment
 			const pending = runtime.getPendingScope(params.ferment_id)
 			if (!pending) {
 				// Seed an empty buffer so attachPendingProposal can replace it.
@@ -1098,6 +1150,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
 		parameters: UpdateScopeFieldParams,
 		async execute(_, params) {
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.UPDATE_SCOPE_FIELD })
+			if (!active.ok) return active.result
 			if (
 				params.field !== "goal" &&
 				params.field !== "criteria" &&
@@ -1199,8 +1253,9 @@ Returns structured answer fields on success, or a tool error if no audience can 
 		parameters: AskUserParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			const applyAndPersist = createApplyAndPersist(runtime)
-			const ferment = runtime.getStorage().get(params.ferment_id)
-			if (!ferment) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.ASK_USER })
+			if (!active.ok) return active.result
+			const ferment = active.ferment
 
 			const askContext = {
 				ferment,

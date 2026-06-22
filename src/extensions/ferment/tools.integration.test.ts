@@ -229,6 +229,65 @@ function loadFerment(id: string): Ferment {
 	return f
 }
 
+// ─── request_ferment_workflow / active guard ─────────────────────────────────
+
+describe("ferment workflow entry and active tool guards", () => {
+	it("request_ferment_workflow creates an active draft from explicit Ferment intent", async () => {
+		const result = ok(
+			await h.call("request_ferment_workflow", {
+				intent: "Use Ferment to add GitHub OAuth",
+				title: "GitHub OAuth",
+			}),
+		)
+
+		const active = getActive()
+		expect(active?.status).toBe("draft")
+		expect(active?.name).toBe("GitHub OAuth")
+		expect(result).toContain(`ferment_id: "${active?.id}"`)
+		expect(result).toContain("propose_ferment_scoping")
+		expect(getPendingScope(active?.id ?? "")).toBeDefined()
+	})
+
+	it("rejects work-plane tools for an existing draft when no ferment is active", async () => {
+		const inactive = h.runtime.getStorage().create("Inactive Draft")
+		setActive(undefined)
+
+		const result = await h.call("propose_ferment_scoping", {
+			ferment_id: inactive.id,
+			title: "Inactive Draft",
+			goal: "Plan the work",
+			success_criteria: ["Plan exists"],
+			constraints: [],
+			phases: [{ name: "Build", goal: "Build it", steps: [{ description: "Do it" }] }],
+			questions: [],
+			gates: passingPlanGates(),
+		})
+
+		expect(err(result)).toContain("requires an active Ferment")
+	})
+
+	it("rejects stale ferment_id when another ferment is active", async () => {
+		const target = h.runtime.getStorage().create("Target Draft")
+		const active = h.runtime.getStorage().create("Active Draft")
+		setActive(active)
+
+		const result = await h.call("propose_ferment_scoping", {
+			ferment_id: target.id,
+			title: "Target Draft",
+			goal: "Plan the work",
+			success_criteria: ["Plan exists"],
+			constraints: [],
+			phases: [{ name: "Build", goal: "Build it", steps: [{ description: "Do it" }] }],
+			questions: [],
+			gates: passingPlanGates(),
+		})
+
+		const text = err(result)
+		expect(text).toContain(`targeted ferment_id "${target.id}"`)
+		expect(text).toContain(`active Ferment is "${active.id}"`)
+	})
+})
+
 // ─── list_ferments ────────────────────────────────────────────────────────────
 
 describe("list_ferments", () => {
@@ -1188,16 +1247,16 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toContain("Standard TODO UX is acceptable")
 	})
 
-	it("treats duplicate propose_ferment_scoping after plan save as a no-op", async () => {
+	it("rejects duplicate propose_ferment_scoping after plan save", async () => {
 		const id = await createFerment("DuplicatePropose")
 		seedPending(id)
 		const ctx = { ui: { select: vi.fn().mockResolvedValue("Start execution  ✓"), input: vi.fn() } }
 
 		ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
-		const second = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+		const second = err(await h.call("propose_ferment_scoping", basePayload(id), ctx))
 
-		expect(second).toContain("already planned")
-		expect(second).toContain("activate_ferment_phase")
+		expect(second).toContain("requires active Ferment status draft")
+		expect(second).toContain("is planned")
 		expect(loadFerment(id).status).toBe("planned")
 	})
 

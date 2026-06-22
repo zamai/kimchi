@@ -308,6 +308,7 @@ describe("registerPhaseTools", () => {
 		let injectedActive = h.storage.get(h.fermentId)
 		if (!injectedActive) throw new Error("Expected active ferment in injected storage")
 		h.runtime.getActive = () => injectedActive
+		h.runtime.getActiveId = () => injectedActive?.id
 		h.runtime.setActive = (ferment) => {
 			injectedActive = ferment
 		}

@@ -37,6 +37,7 @@ const { judgeApiCall: mockJudgeApiCall, judgeJourneyGrade: mockJudgeJourneyGrade
 
 interface RegisteredTool {
 	name: string
+	description?: string
 	execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>
 	renderResult?: (result: unknown) => unknown
 }
@@ -61,9 +62,19 @@ function createHarness() {
 		on: vi.fn(),
 		getFlag: vi.fn(() => undefined),
 		getActiveTools: vi.fn(() => []),
+		getAllTools: vi.fn(() => [
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: FERMENT_TOOLS.REQUEST_WORKFLOW },
+			{ name: FERMENT_TOOLS.PROPOSE_SCOPING },
+			{ name: FERMENT_TOOLS.SCOPE },
+			{ name: FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA },
+			{ name: FERMENT_TOOLS.LIST },
+		]),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Lifecycle Test")
+	runtime.setActive(ferment)
 	return { storage, runtime, pi, fermentId: ferment.id }
 }
 
@@ -121,6 +132,69 @@ const passingFermentGates = () => [
 		evidence: "phase-1 step-1 used 'smoke'",
 	},
 ]
+
+describe("request_ferment_workflow via registerLifecycleTools", () => {
+	function createRequestHarness() {
+		const h = createHarness()
+		h.runtime.setActive(undefined)
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get(FERMENT_TOOLS.REQUEST_WORKFLOW)
+		if (!tool) throw new Error("request_ferment_workflow not registered")
+		const execute = tool.execute as unknown as (
+			toolCallId: string,
+			params: Record<string, unknown>,
+			signal?: AbortSignal,
+			onUpdate?: unknown,
+			ctx?: unknown,
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute, tool }
+	}
+
+	it("registers explicit-intent wording and avoids generic complexity triggers", () => {
+		const { tool } = createRequestHarness()
+		const description = tool.description ?? ""
+
+		expect(description).toContain("explicitly asks")
+		expect(description).toContain("Do not call this merely because")
+		expect(description).toContain("complex")
+	})
+
+	it("creates an active draft and returns the next scoping action", async () => {
+		const { h, execute } = createRequestHarness()
+
+		const result = await execute("tool-call-1", {
+			intent: "Use Ferment to add OAuth login",
+			title: "OAuth Login",
+		})
+
+		const text = okText(result)
+		const active = h.runtime.getActive()
+		expect(active?.status).toBe("draft")
+		expect(active?.name).toBe("OAuth Login")
+		expect(text).toContain(`ferment_id: "${active?.id}"`)
+		expect(text).toContain("Next action: call `propose_ferment_scoping`")
+		expect(h.runtime.getPendingScope(active?.id ?? "")).toBeDefined()
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(
+			expect.arrayContaining([FERMENT_TOOLS.PROPOSE_SCOPING, FERMENT_TOOLS.SCOPE]),
+		)
+	})
+
+	it("rejects empty intent", async () => {
+		const { execute } = createRequestHarness()
+
+		const result = await execute("tool-call-1", { intent: "   " })
+
+		expect(errText(result)).toContain("intent")
+	})
+})
 
 beforeEach(() => {
 	vi.restoreAllMocks()
@@ -804,7 +878,7 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
 	})
 
-	it("treats complete_ferment on an already-complete ferment as an inert no-op", async () => {
+	it("rejects complete_ferment on an already-complete ferment", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
 		const first = await completeFerment(h.runtime, {
@@ -820,8 +894,8 @@ describe("completeFerment", () => {
 
 		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId })
 
-		expect(okText(second)).toContain('Ferment "Lifecycle Test" is already complete')
-		expect(okText(second)).toContain("without clear user consent")
+		expect(errText(second)).toContain('Ferment "Lifecycle Test" is already complete')
+		expect(errText(second)).toContain("without clear user consent")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 	})

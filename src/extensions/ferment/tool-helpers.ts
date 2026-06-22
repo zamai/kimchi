@@ -102,6 +102,41 @@ export function toolErrWithNextAction(text: string, ferment: Ferment | undefined
 	return toolErr(withNextActionHint(text, ferment))
 }
 
+export function requireActiveFerment(
+	runtime: FermentRuntime,
+	fermentId: string,
+	options: { toolName?: string; statuses?: readonly Ferment["status"][] } = {},
+): { ok: true; ferment: Ferment } | { ok: false; result: ReturnType<typeof toolErr> } {
+	const toolLabel = options.toolName ?? "This Ferment tool"
+	const stored = runtime.getStorage().get(fermentId)
+	if (!stored) return { ok: false, result: toolErr(`Ferment not found: ${fermentId}`) }
+
+	const activeId = runtime.getActiveId()
+	if (!activeId) {
+		return {
+			ok: false,
+			result: toolErr(`${toolLabel} requires an active Ferment. Switch, resume, or start a Ferment before retrying.`),
+		}
+	}
+	if (activeId !== fermentId) {
+		return {
+			ok: false,
+			result: toolErr(
+				`${toolLabel} targeted ferment_id "${fermentId}", but the active Ferment is "${activeId}". Switch to the target Ferment or call the tool with the active ferment_id.`,
+			),
+		}
+	}
+	if (options.statuses && !options.statuses.includes(stored.status)) {
+		return {
+			ok: false,
+			result: toolErr(
+				`${toolLabel} requires active Ferment status ${options.statuses.join(" or ")}. "${stored.name}" is ${stored.status}.`,
+			),
+		}
+	}
+	return { ok: true, ferment: stored }
+}
+
 // ─── Resolvers ────────────────────────────────────────────────────────────────
 
 /** Resolve a phase by exact id → name substring → active phase. */

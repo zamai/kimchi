@@ -48,6 +48,18 @@ export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
 })
 
+export const RequestFermentWorkflowParams = Type.Object({
+	intent: Type.String({
+		description:
+			"The user's explicit request to start or use Ferment. Do not call this merely because a task is complex, broad, multi-step, or long-running.",
+	}),
+	title: Type.Optional(
+		Type.String({
+			description: "Optional concise draft title. If omitted, the host derives one from intent.",
+		}),
+	),
+})
+
 const SuccessCriteriaSchema = Type.Array(Type.String(), {
 	minItems: 1,
 	description: "Observable acceptance criteria. Each item must be one concrete, verifiable criterion.",

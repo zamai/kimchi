@@ -28,6 +28,7 @@ import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
+	requireActiveFerment,
 	resolvePhase,
 	toolErr,
 	toolErrWithNextAction,
@@ -251,8 +252,9 @@ export async function completePhase(
 	runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
 
 	// Step 1: resolve the phase (host concern — fuzzy lookup).
-	const f = runtime.getStorage().get(params.ferment_id)
-	if (!f) return toolErr("Ferment not found.")
+	const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.COMPLETE_PHASE })
+	if (!active.ok) return active.result
+	const f = active.ferment
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 
@@ -511,8 +513,9 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		async execute(_, params) {
 			// Resolution is a host concern (fuzzy lookup) — find the phase first,
 			// then dispatch to the right state-machine command.
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.ACTIVATE_PHASE })
+			if (!active.ok) return active.result
+			const f = active.ferment
 
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
 			if (!target && params.phase_id) {
@@ -619,8 +622,9 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 		parameters: RefineParams,
 		async execute(_, params) {
 			// Phase resolution: exact id → name substring → active phase fallback.
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.REFINE_PHASE })
+			if (!active.ok) return active.result
+			const f = active.ferment
 			let phase = f.phases.find((p) => p.id === params.phase_id)
 			if (!phase) {
 				const needle = params.phase_id.toLowerCase()
@@ -690,8 +694,9 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 		parameters: SkipPhaseParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			// Resolve via fuzzy first (LLM may pass partial id).
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.SKIP_PHASE })
+			if (!active.ok) return active.result
+			const f = active.ferment
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
@@ -721,8 +726,9 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 		description: "Mark a phase as failed with a reason.",
 		parameters: FailPhaseParams,
 		async execute(_, params) {
-			const f = runtime.getStorage().get(params.ferment_id)
-			if (!f) return toolErr("Ferment not found.")
+			const active = requireActiveFerment(runtime, params.ferment_id, { toolName: FERMENT_TOOLS.FAIL_PHASE })
+			if (!active.ok) return active.result
+			const f = active.ferment
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
