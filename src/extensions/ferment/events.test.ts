@@ -382,6 +382,43 @@ describe("registerFermentEvents", () => {
 		)
 	})
 
+	it("does not nudge a text-only assistant turn while plan review is pending", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-events-review-wait-test-")))
+		const draft = storage.create("Draft Review Wait")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setActive(draft)
+		runtime.markScopingInteractive(draft.id)
+		runtime.setPendingPlanReview({
+			fermentId: draft.id,
+			planMarkdown: "# Plan ready for review",
+		})
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Plan submitted for review. Awaiting host review." }],
+				},
+			},
+			{},
+		)
+
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_scoping_text_nudge",
+			}),
+			expect.anything(),
+		)
+	})
+
 	it("model_select captures the newly-selected model in the judge context", () => {
 		const captureJudgeContext = vi.fn()
 		const runtime: FermentRuntime = {

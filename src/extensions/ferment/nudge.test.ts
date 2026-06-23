@@ -404,7 +404,7 @@ describe("scoping progress nudge", () => {
 })
 
 describe("scoping text-only nudge", () => {
-	function makeRuntime(options: { confirmed?: boolean; interactive?: boolean } = {}) {
+	function makeRuntime(options: { confirmed?: boolean; interactive?: boolean; pendingReview?: boolean } = {}) {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-scoping-text-nudge-test-")))
 		const ferment = storage.create("Scoping Text Nudge")
 		const runtime: FermentRuntime = {
@@ -412,6 +412,8 @@ describe("scoping text-only nudge", () => {
 			getStorage: () => storage,
 			getActiveId: () => ferment.id,
 			getContinuationPolicy: () => "manual",
+			getPendingPlanReview: () =>
+				options.pendingReview ? { fermentId: ferment.id, planMarkdown: "# Pending review" } : undefined,
 			isAutomatedContinuationEnabled: () => false,
 			isScopingConfirmed: () => options.confirmed ?? false,
 			isScopingInteractive: () => options.interactive ?? true,
@@ -491,6 +493,16 @@ describe("scoping text-only nudge", () => {
 	it("does not nudge non-interactive draft scoping", () => {
 		const pi = createPi()
 		const { runtime } = makeRuntime({ interactive: false })
+
+		const nudged = maybeInjectScopingTextNudge(pi, runtime)
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not nudge while a plan review is pending", () => {
+		const pi = createPi()
+		const { runtime } = makeRuntime({ pendingReview: true })
 
 		const nudged = maybeInjectScopingTextNudge(pi, runtime)
 

@@ -138,6 +138,10 @@ export function maybeInjectScopingTextNudge(
 	}
 
 	if (fresh.status !== "draft" || !runtime.isScopingInteractive(fresh.id)) return false
+	if (runtime.getPendingPlanReview(fresh.id)) {
+		scopingTextNudgeCounts.delete(fresh.id)
+		return false
+	}
 
 	const count = scopingTextNudgeCounts.get(fresh.id) ?? 0
 	if (count >= MAX_CONSECUTIVE_SCOPING_TEXT_NUDGES) {
