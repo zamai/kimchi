@@ -1,9 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { getDisabledToolNames } from "../prompt-construction/tool-visibility.js"
+import {
+	type ToolVisibilityAPI,
+	createToolVisibility,
+	getDisabledToolNames,
+} from "../prompt-construction/tool-visibility.js"
 import type { FermentRuntime } from "./runtime.js"
-import { FERMENT_TOOLS, isFermentOnlyToolName } from "./tool-names.js"
+import { FERMENT_TOOLS, FERMENT_TOOL_NAMES, isFermentOnlyToolName } from "./tool-names.js"
 
 /**
  * Tools available during the planning phase of a ferment lifecycle.
@@ -88,6 +92,10 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
  */
 export type FermentToolProfile = "idle" | "worker" | "planning" | "implementation"
 
+export const IDLE_VISIBLE_FERMENT_TOOL_NAMES = Object.freeze([FERMENT_TOOLS.REQUEST_WORKFLOW, FERMENT_TOOLS.LIST])
+
+export const IDLE_HIDDEN_FERMENT_TOOL_NAMES = Object.freeze(FERMENT_TOOL_NAMES.filter(isFermentOnlyToolName))
+
 export function profileForFerment(ferment: Ferment | undefined): FermentToolProfile {
 	if (isAgentWorker()) return "worker"
 	if (!ferment) return "idle"
@@ -153,6 +161,7 @@ export class FermentToolScope {
 }
 
 const scopesByPi = new WeakMap<ExtensionAPI, FermentToolScope>()
+const idleVisibilityByPi = new WeakMap<ExtensionAPI, ToolVisibilityAPI>()
 
 export function getFermentToolScope(pi: ExtensionAPI): FermentToolScope {
 	let scope = scopesByPi.get(pi)
@@ -163,7 +172,53 @@ export function getFermentToolScope(pi: ExtensionAPI): FermentToolScope {
 	return scope
 }
 
+function getFermentIdleVisibility(pi: ExtensionAPI): ToolVisibilityAPI {
+	let visibility = idleVisibilityByPi.get(pi)
+	if (!visibility) {
+		visibility = createToolVisibility(pi)
+		idleVisibilityByPi.set(pi, visibility)
+	}
+	return visibility
+}
+
+function enforceIdleEntryTools(pi: ExtensionAPI): void {
+	const disabled = getDisabledToolNames(pi)
+	const registered = new Set(pi.getAllTools().map((tool) => tool.name))
+	const active = new Set(pi.getActiveTools())
+	let changed = false
+
+	for (const name of IDLE_HIDDEN_FERMENT_TOOL_NAMES) {
+		if (active.delete(name)) changed = true
+	}
+	for (const name of IDLE_VISIBLE_FERMENT_TOOL_NAMES) {
+		if (registered.has(name) && !disabled.has(name) && !active.has(name)) {
+			active.add(name)
+			changed = true
+		}
+	}
+
+	if (changed) pi.setActiveTools([...active])
+}
+
+// Visibility-only idle guard for normal chat. Unlike the full idle profile, this
+// preserves the normal active tool list while forcing Ferment into startup-only
+// visibility: entry/discovery tools visible, work-plane lifecycle tools hidden.
+export function applyFermentIdleToolVisibility(pi: ExtensionAPI, hasActiveFerment: boolean): void {
+	const visibility = getFermentIdleVisibility(pi)
+	if (hasActiveFerment) {
+		visibility.enable(IDLE_HIDDEN_FERMENT_TOOL_NAMES)
+	} else {
+		visibility.disable(IDLE_HIDDEN_FERMENT_TOOL_NAMES)
+		enforceIdleEntryTools(pi)
+	}
+}
+
 export function applyFermentToolProfile(pi: ExtensionAPI, profile: FermentToolProfile): void {
+	if (profile === "idle") {
+		applyFermentIdleToolVisibility(pi, false)
+	} else if (profile === "planning" || profile === "implementation") {
+		applyFermentIdleToolVisibility(pi, true)
+	}
 	getFermentToolScope(pi).applyProfile(profile)
 }
 

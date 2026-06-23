@@ -162,6 +162,7 @@ describe("request_ferment_workflow via registerLifecycleTools", () => {
 		const { tool } = createRequestHarness()
 		const description = tool.description ?? ""
 
+		expect(description).toContain("Start a new Ferment workflow")
 		expect(description).toContain("explicitly asks")
 		expect(description).toContain("Do not call this merely because")
 		expect(description).toContain("complex")
@@ -642,7 +643,9 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		const text = okText(result)
 		expect(text).toContain("Confirmed: yes")
 		expect(text).toContain("Changes: (none)")
-		expect(text).toContain("Next action: continue to exploration.")
+		expect(text).toContain("Next action: do any required targeted exploration")
+		expect(text).toContain("call propose_ferment_scoping with the full plan now")
+		expect(text).toContain("Do not stop with a prose transition.")
 		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
 			"Yes, looks good",
 			"No (input what is wrong)",
@@ -740,6 +743,7 @@ describe("ask_user via registerLifecycleTools", () => {
 
 	it("allows pure confirm shorthand as a Yes/No question", async () => {
 		const { h, execute } = createAskUserHarness()
+		h.runtime.markScopingInteractive(h.fermentId)
 		const select = vi.fn(async () => "Yes")
 
 		const result = await execute(
@@ -755,6 +759,8 @@ describe("ask_user via registerLifecycleTools", () => {
 		)
 
 		expect(okText(result)).toContain("Choice: yes")
+		expect(okText(result)).toContain("call confirm_ferment_completion_criteria")
+		expect(okText(result)).toContain("Do not stop with a prose transition.")
 		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
 	})
 })

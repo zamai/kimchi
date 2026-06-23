@@ -7,17 +7,26 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment, Phase } from "../../ferment/types.js"
 import { registerFermentEvents } from "./events.js"
+import { resetAllScopingTextNudgeCounts } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId } from "./state.js"
-import { FERMENT_TOOL_NAMES } from "./tool-names.js"
+import { FERMENT_TOOLS, FERMENT_TOOL_NAMES } from "./tool-names.js"
 import { applyFermentToolProfile, profileForFerment } from "./tool-scope.js"
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 
 function createPi() {
 	const handlers = new Map<string, EventHandler>()
-	let activeTools = ["read", "bash", "start_ferment_step"]
+	let activeTools = [
+		"read",
+		"bash",
+		FERMENT_TOOLS.REQUEST_WORKFLOW,
+		FERMENT_TOOLS.LIST,
+		FERMENT_TOOLS.SCOPE,
+		FERMENT_TOOLS.ACTIVATE_PHASE,
+		FERMENT_TOOLS.START_STEP,
+	]
 	const pi = {
 		on: (event: string, handler: EventHandler) => {
 			handlers.set(event, handler)
@@ -29,10 +38,11 @@ function createPi() {
 		getAllTools: vi.fn(() => [
 			{ name: "read" },
 			{ name: "bash" },
-			{ name: "list_ferments" },
-			{ name: "scope_ferment" },
-			{ name: "activate_ferment_phase" },
-			{ name: "start_ferment_step" },
+			{ name: FERMENT_TOOLS.REQUEST_WORKFLOW },
+			{ name: FERMENT_TOOLS.LIST },
+			{ name: FERMENT_TOOLS.SCOPE },
+			{ name: FERMENT_TOOLS.ACTIVATE_PHASE },
+			{ name: FERMENT_TOOLS.START_STEP },
 		]),
 		setActiveTools: vi.fn((toolNames: string[]) => {
 			activeTools = toolNames
@@ -46,6 +56,7 @@ function createPi() {
 
 afterEach(() => {
 	vi.unstubAllEnvs()
+	resetAllScopingTextNudgeCounts()
 	clearActiveFermentId()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 })
@@ -78,7 +89,7 @@ describe("registerFermentEvents", () => {
 		expect(pi.appendEntry).not.toHaveBeenCalled()
 	})
 
-	it("stages one-shot mode during session_start and applies runtime-derived idle profile before first agent run", async () => {
+	it("stages one-shot mode during session_start and hides idle Ferment work-plane tools", async () => {
 		const storage = { list: vi.fn(() => []) } as unknown as FermentEventStore
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -108,17 +119,28 @@ describe("registerFermentEvents", () => {
 		await sessionStart({}, { hasUI: false })
 
 		expect(runtime.setActive).toHaveBeenCalledWith(undefined)
-		expect(pi.getAllTools).not.toHaveBeenCalled()
-		expect(pi.setActiveTools).not.toHaveBeenCalled()
+		expect(pi.getAllTools).toHaveBeenCalled()
+		let lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain(FERMENT_TOOLS.REQUEST_WORKFLOW)
+		expect(lastCall).toContain(FERMENT_TOOLS.LIST)
+		expect(lastCall).not.toContain(FERMENT_TOOLS.SCOPE)
+		expect(lastCall).not.toContain(FERMENT_TOOLS.ACTIVATE_PHASE)
+		expect(lastCall).not.toContain(FERMENT_TOOLS.START_STEP)
+		const callsAfterSessionStart = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls.length
 
 		const beforeAgentStart = handlers.get("before_agent_start")
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
-		// With no active ferment, before_agent_start must NOT call setActiveTools.
-		// Normal chat mode is unrestricted — the toolset stays as-is.
-		expect(pi.setActiveTools).not.toHaveBeenCalled()
+		// The idle visibility vote is already applied at session_start, so the
+		// pre-run refresh should not churn the active tool list.
+		expect(pi.setActiveTools).toHaveBeenCalledTimes(callsAfterSessionStart)
+		lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain(FERMENT_TOOLS.REQUEST_WORKFLOW)
+		expect(lastCall).toContain(FERMENT_TOOLS.LIST)
 	})
 
 	it("applies runtime-derived implementation profile on before_agent_start in one-shot mode when ferment has activated phase", async () => {
@@ -192,9 +214,7 @@ describe("registerFermentEvents", () => {
 		expect(result?.systemPrompt).toBeUndefined()
 	})
 
-	it("does not call setActiveTools in normal chat mode (no active ferment)", async () => {
-		// When no ferment is active, before_agent_start must leave the toolset
-		// untouched so the user gets the full unrestricted tool set.
+	it("hides Ferment work-plane tools in normal chat mode while keeping entry tools visible", async () => {
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime() }
 		const { handlers, pi } = createPi()
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
@@ -205,7 +225,14 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
-		expect(pi.setActiveTools).not.toHaveBeenCalled()
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain(FERMENT_TOOLS.REQUEST_WORKFLOW)
+		expect(lastCall).toContain(FERMENT_TOOLS.LIST)
+		expect(lastCall).not.toContain(FERMENT_TOOLS.SCOPE)
+		expect(lastCall).not.toContain(FERMENT_TOOLS.ACTIVATE_PHASE)
+		expect(lastCall).not.toContain(FERMENT_TOOLS.START_STEP)
 	})
 
 	it("active planner first snapshot includes existing-ferment lifecycle tools", async () => {
@@ -314,6 +341,45 @@ describe("registerFermentEvents", () => {
 			{ triggerTurn: false },
 		)
 		expect(ctx.ui.notify).toHaveBeenCalledWith('Plan saved for "Google OAuth Login". 1 phase(s) ready.')
+	})
+
+	it("nudges draft interactive scoping when the assistant stops with prose and no tool call", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-events-text-nudge-test-")))
+		const draft = storage.create("Draft Scoping Hang")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setActive(draft)
+		runtime.markScopingInteractive(draft.id)
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "I will now confirm the completion criteria." }],
+				},
+			},
+			{},
+		)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_scoping_text_nudge",
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining(`ferment_id "${draft.id}"`),
+					}),
+				],
+				display: false,
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
 	})
 
 	it("model_select captures the newly-selected model in the judge context", () => {

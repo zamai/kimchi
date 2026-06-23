@@ -4,8 +4,11 @@ import type { Ferment, Phase } from "../../ferment/types.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { FERMENT_TOOLS, FERMENT_TOOL_NAMES } from "./tool-names.js"
 import {
+	IDLE_HIDDEN_FERMENT_TOOL_NAMES,
+	IDLE_VISIBLE_FERMENT_TOOL_NAMES,
 	IMPLEMENTATION_TOOL_NAMES,
 	PLANNING_TOOL_NAMES,
+	applyFermentIdleToolVisibility,
 	applyFermentToolProfile,
 	profileForFerment,
 } from "./tool-scope.js"
@@ -205,6 +208,56 @@ describe("worker profile", () => {
 })
 
 describe("idle profile", () => {
+	it("visibility hides ferment-only tools while keeping normal and discovery tools active", () => {
+		const allTools = ["read", "bash", ...FERMENT_TOOL_NAMES]
+		const pi = createPi(allTools, allTools)
+
+		applyFermentIdleToolVisibility(pi, false)
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(pi.getAllTools).toHaveBeenCalled()
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("bash")
+		for (const name of IDLE_VISIBLE_FERMENT_TOOL_NAMES) {
+			expect(lastCall).toContain(name)
+		}
+		for (const name of IDLE_HIDDEN_FERMENT_TOOL_NAMES) {
+			expect(lastCall).not.toContain(name)
+		}
+	})
+
+	it("visibility restores registered ferment startup tools when they were missing", () => {
+		const allTools = ["read", "bash", ...FERMENT_TOOL_NAMES]
+		const pi = createPi(["read", "bash", FERMENT_TOOLS.SCOPE], allTools)
+
+		applyFermentIdleToolVisibility(pi, false)
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("bash")
+		for (const name of IDLE_VISIBLE_FERMENT_TOOL_NAMES) {
+			expect(lastCall).toContain(name)
+		}
+		for (const name of IDLE_HIDDEN_FERMENT_TOOL_NAMES) {
+			expect(lastCall).not.toContain(name)
+		}
+	})
+
+	it("active profiles release the idle visibility vote before applying the planning profile", () => {
+		const allTools = [...PLANNING_TOOL_NAMES, "bash"]
+		const pi = createPi(allTools, allTools)
+
+		applyFermentIdleToolVisibility(pi, false)
+		applyFermentToolProfile(pi, "planning")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain(FERMENT_TOOLS.PROPOSE_SCOPING)
+		expect(lastCall).toContain(FERMENT_TOOLS.SCOPE)
+		expect(lastCall).toContain(FERMENT_TOOLS.ACTIVATE_PHASE)
+		expect(lastCall).toContain(FERMENT_TOOLS.ASK_USER)
+		expect(lastCall).not.toContain("bash")
+	})
+
 	it("includes non-ferment tools and discovery tools but strips ferment-only tools", () => {
 		// Idle = normal chat or post-ferment. Non-ferment tools (read, bash, etc.)
 		// and discovery tools (list_ferments, request_ferment_workflow) stay.

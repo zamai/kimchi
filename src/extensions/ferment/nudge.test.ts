@@ -10,10 +10,12 @@ import {
 	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	maybeInjectScopingTextNudge,
 	onFermentToolCallSeen,
 	onStepCompleted,
 	resetAllFermentStopNudgeCounts,
 	resetAllReactiveContinuationNudgeCounts,
+	resetAllScopingTextNudgeCounts,
 } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { getActive, resetScopingExploreTurns, setActive } from "./state.js"
@@ -47,6 +49,7 @@ afterEach(() => {
 	setActive(undefined)
 	resetAllReactiveContinuationNudgeCounts()
 	resetAllFermentStopNudgeCounts()
+	resetAllScopingTextNudgeCounts()
 	resetScopingExploreTurns("ferment-1")
 })
 
@@ -397,6 +400,122 @@ describe("scoping progress nudge", () => {
 		const nudged = maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
 		expect(nudged).toBe(false)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1) // only the first nudge
+	})
+})
+
+describe("scoping text-only nudge", () => {
+	function makeRuntime(options: { confirmed?: boolean; interactive?: boolean } = {}) {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-scoping-text-nudge-test-")))
+		const ferment = storage.create("Scoping Text Nudge")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getActiveId: () => ferment.id,
+			getContinuationPolicy: () => "manual",
+			isAutomatedContinuationEnabled: () => false,
+			isScopingConfirmed: () => options.confirmed ?? false,
+			isScopingInteractive: () => options.interactive ?? true,
+		}
+		return { runtime, ferment }
+	}
+
+	it("nudges draft interactive scoping even when continuation policy is manual", () => {
+		const pi = createPi()
+		const { runtime, ferment } = makeRuntime()
+
+		const nudged = maybeInjectScopingTextNudge(pi, runtime)
+
+		expect(nudged).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_scoping_text_nudge",
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining(`ferment_id "${ferment.id}"`),
+					}),
+				],
+			}),
+			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining("confirm_ferment_completion_criteria"),
+					}),
+				],
+			}),
+			expect.anything(),
+		)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining("propose_ferment_scoping"),
+					}),
+				],
+			}),
+			expect.anything(),
+		)
+	})
+
+	it("directs already host-confirmed scoping to scope_ferment", () => {
+		const pi = createPi()
+		const { runtime } = makeRuntime({ confirmed: true })
+
+		const nudged = maybeInjectScopingTextNudge(pi, runtime)
+
+		expect(nudged).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining("call scope_ferment"),
+					}),
+				],
+			}),
+			expect.anything(),
+		)
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining("call confirm_ferment_completion_criteria"),
+					}),
+				],
+			}),
+			expect.anything(),
+		)
+	})
+
+	it("does not nudge non-interactive draft scoping", () => {
+		const pi = createPi()
+		const { runtime } = makeRuntime({ interactive: false })
+
+		const nudged = maybeInjectScopingTextNudge(pi, runtime)
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("suppresses repeated text-only scoping nudges and resets after a tool call", () => {
+		const pi = createPi()
+		const { runtime, ferment } = makeRuntime()
+
+		expect(maybeInjectScopingTextNudge(pi, runtime)).toBe(true)
+		expect(maybeInjectScopingTextNudge(pi, runtime)).toBe(true)
+		expect(maybeInjectScopingTextNudge(pi, runtime)).toBe(false)
+		expect(pi.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ text: expect.stringContaining("Scoping continuation nudge suppressed") }),
+			}),
+			{ triggerTurn: false },
+		)
+
+		onFermentToolCallSeen(ferment.id)
+
+		expect(maybeInjectScopingTextNudge(pi, runtime)).toBe(true)
 	})
 })
 

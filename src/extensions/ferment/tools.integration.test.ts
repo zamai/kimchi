@@ -264,6 +264,7 @@ describe("ferment workflow entry and active tool guards", () => {
 		})
 
 		expect(err(result)).toContain("requires an active Ferment")
+		expect(err(result)).not.toContain("start a Ferment")
 	})
 
 	it("rejects stale ferment_id when another ferment is active", async () => {

@@ -551,17 +551,16 @@ async function confirmCompletionCriteria(
 
 	const ready = criteriaOk && changes.length === 0
 	const rationaleLine = rationale ? `\nRationale: ${rationale}` : ""
+	const nextAction = ready
+		? "do any required targeted exploration, or if none is needed, call propose_ferment_scoping with the full plan now. Do not stop with a prose transition."
+		: `revise the criteria and call ${FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA} again before exploration.`
 	return toolOk(
 		[
 			"Completion criteria reviewed.",
 			`Confirmed: ${criteriaOk ? "yes" : "no"}`,
 			`Changes: ${changes || "(none)"}`,
 			`Answered by: ${answeredBy}${rationaleLine}`,
-			`Next action: ${
-				ready
-					? "continue to exploration."
-					: `revise the criteria and call ${FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA} again before exploration.`
-			}`,
+			`Next action: ${nextAction}`,
 		].join("\n"),
 	)
 }
@@ -1312,7 +1311,13 @@ Returns structured answer fields on success, or a tool error if no audience can 
 						: response.response_type === "text"
 							? `Text: ${response.text ?? ""}`
 							: `Choice: ${response.choice ?? ""}`
-			return toolOk(`Answer received.\n${answerLine}\nAnswered by: ${response.answered_by}${rationaleLine}`)
+			const nextActionLine =
+				ferment.status === "draft" && runtime.isScopingInteractive(params.ferment_id)
+					? "\nNext action: reflect on the answers, then call ask_user again only for new decision-blocking questions; otherwise call confirm_ferment_completion_criteria. Do not stop with a prose transition."
+					: ""
+			return toolOk(
+				`Answer received.\n${answerLine}\nAnswered by: ${response.answered_by}${rationaleLine}${nextActionLine}`,
+			)
 		},
 	})
 }

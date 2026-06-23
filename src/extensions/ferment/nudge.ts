@@ -38,6 +38,8 @@ export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 
 const MAX_CONSECUTIVE_REACTIVE_NUDGES = 1
 const reactiveNudgeCounts = new Map<string, number>()
+const MAX_CONSECUTIVE_SCOPING_TEXT_NUDGES = 2
+const scopingTextNudgeCounts = new Map<string, number>()
 
 // ─── Ferment stop nudge (tool-call turn that ended with stopReason "stop") ────
 // Separate counter so it doesn't count down the reactive (text-only) budget.
@@ -50,6 +52,14 @@ export function resetReactiveContinuationNudgeCount(fermentId: string): void {
 
 export function resetAllReactiveContinuationNudgeCounts(): void {
 	reactiveNudgeCounts.clear()
+}
+
+export function resetScopingTextNudgeCount(fermentId: string): void {
+	scopingTextNudgeCounts.delete(fermentId)
+}
+
+export function resetAllScopingTextNudgeCounts(): void {
+	scopingTextNudgeCounts.clear()
 }
 
 export function resetFermentStopNudgeCount(fermentId: string): void {
@@ -106,6 +116,72 @@ export function maybeInjectReactiveContinuationNudge(
 		tag: "Reactive continuation nudge",
 		deliverAsFollowUp: true,
 	})
+}
+
+/**
+ * Interactive draft scoping runs in manual policy but still needs the model to
+ * call the next scoping tool after prose reflection. Manual policy pauses phase
+ * advancement; it should not strand the interview/criteria/proposal flow.
+ */
+export function maybeInjectScopingTextNudge(
+	pi: ExtensionAPI,
+	runtime: FermentRuntime = defaultFermentRuntime,
+): boolean {
+	const id = runtime.getActiveId()
+	if (!id) return false
+	const fresh = refreshActiveFermentFromStorage(runtime)
+	const inactive = !fresh || fresh.status === "complete" || fresh.status === "abandoned"
+	if (inactive) runtime.setActive(undefined)
+	if (inactive || fresh.status === "paused") {
+		scopingTextNudgeCounts.delete(id)
+		return false
+	}
+
+	if (fresh.status !== "draft" || !runtime.isScopingInteractive(fresh.id)) return false
+
+	const count = scopingTextNudgeCounts.get(fresh.id) ?? 0
+	if (count >= MAX_CONSECUTIVE_SCOPING_TEXT_NUDGES) {
+		const suppressionText = `Scoping continuation nudge suppressed after ${count} consecutive text-only assistant turns for "${fresh.name}".`
+		void pi.sendMessage(
+			{
+				customType: "ferment_breadcrumb",
+				content: [{ type: "text", text: suppressionText }],
+				display: true,
+				details: { text: suppressionText, variant: "step" },
+			},
+			{ triggerTurn: false },
+		)
+		return false
+	}
+
+	scopingTextNudgeCounts.set(fresh.id, count + 1)
+	const nextActionLines = runtime.isScopingConfirmed(fresh.id)
+		? [
+				"- Host scoping confirmation is already recorded; call scope_ferment with the confirmed full payload now.",
+				"- Do not ask more questions or re-propose the plan.",
+			]
+		: [
+				"- If a new decision-blocking question remains, call ask_user.",
+				"- If completion criteria have not been confirmed yet and no new question remains, call confirm_ferment_completion_criteria.",
+				"- If completion criteria are already confirmed in this conversation, call propose_ferment_scoping with the full payload, including questions: [] and all P1/P2/P3 gates.",
+			]
+	void pi.sendMessage(
+		{
+			customType: "ferment_scoping_text_nudge",
+			content: [
+				{
+					type: "text",
+					text: `SCOPING CONTINUATION: You ended the turn without calling the next scoping tool for ferment_id "${fresh.id}". Continue the structured flow now.
+
+${nextActionLines.join("\n")}
+- Do not reply with prose only.`,
+				},
+			],
+			display: false,
+		},
+		{ triggerTurn: true, deliverAs: "followUp" },
+	)
+	return true
 }
 
 /**
@@ -191,6 +267,7 @@ export function onPhaseCompleted(runtime: FermentRuntime = defaultFermentRuntime
  */
 export function onFermentToolCallSeen(fermentId: string): void {
 	stopNudgeCounts.delete(fermentId)
+	scopingTextNudgeCounts.delete(fermentId)
 }
 
 // ─── Scoping exploration progress nudge ───────────────────────────────────────

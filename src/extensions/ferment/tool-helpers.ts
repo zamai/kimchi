@@ -115,7 +115,7 @@ export function requireActiveFerment(
 	if (!activeId) {
 		return {
 			ok: false,
-			result: toolErr(`${toolLabel} requires an active Ferment. Switch, resume, or start a Ferment before retrying.`),
+			result: toolErr(`${toolLabel} requires an active Ferment. Do not retry this tool unless a Ferment is active.`),
 		}
 	}
 	if (activeId !== fermentId) {

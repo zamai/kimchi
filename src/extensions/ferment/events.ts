@@ -16,8 +16,10 @@ import {
 	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	maybeInjectScopingTextNudge,
 	onFermentToolCallSeen,
 	resetReactiveContinuationNudgeCount,
+	resetScopingTextNudgeCount,
 } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { editPhaseProposal } from "./phase-editor.js"
@@ -29,6 +31,7 @@ import { confirmPendingScope } from "./scoping-confirmation.js"
 import { clearActiveFermentId, getActiveFermentId } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import {
+	applyFermentIdleToolVisibility,
 	applyFermentRuntimeToolProfile,
 	applyFermentToolProfile,
 	setActiveFermentAndApplyProfile,
@@ -286,6 +289,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (isAgentWorker()) {
 			return
 		}
+		applyFermentIdleToolVisibility(pi, false)
 		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
@@ -426,11 +430,11 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			// strip all tools from the subagent on the first turn.
 			return {}
 		}
-		// Only apply a ferment profile when a ferment is active. In normal chat
-		// mode (no active ferment) leave the toolset untouched so the user gets
-		// the full tool set. The idle profile (discovery-only) is applied by
-		// command handlers when entering/exiting ferment mode, not here.
+		// Keep normal chat broad, but hide Ferment work-plane tools until an
+		// active Ferment exists. Discovery/entry tools remain visible so explicit
+		// natural-language Ferment startup still works.
 		if (!runtime.getActive()) {
+			applyFermentIdleToolVisibility(pi, false)
 			return {}
 		}
 		// One-shot and interactive flows share the unified profile model: derive
@@ -454,6 +458,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const stopReason = (event.message as { stopReason?: string }).stopReason
 		if (toolCallSeen && activeId) {
 			resetReactiveContinuationNudgeCount(activeId)
+			resetScopingTextNudgeCount(activeId)
 			// A normal tool-use turn means the model is still progressing, so reset
 			// the stop-nudge budget. A tool-use turn that ended with "stop" is exactly
 			// what the stop-nudge counter is tracking, so do not reset it here.
@@ -476,6 +481,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
 		if (!toolCallSeen) {
+			const scopingNudged = maybeInjectScopingTextNudge(pi, runtime)
+			if (scopingNudged) return
 			maybeInjectReactiveContinuationNudge(pi, runtime)
 		} else if (stopReason === "stop") {
 			// The model made tool calls this turn but ended with stopReason "stop"
